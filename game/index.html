@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NeuroReach Work Cell</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="simple">
+  <header class="top">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <div>
+        <h1>NeuroReach <span>Work Cell</span></h1>
+        <p class="brand-sub">EEG-commanded packing station &middot; PhysioNet EEGMMIDB &middot; PyBullet KUKA iiwa</p>
+      </div>
+    </div>
+    <ul class="status" aria-label="System status">
+      <li><i class="dot" id="dot-sim"></i>Simulator <b id="sim-phase">connecting</b></li>
+      <li><i class="dot on"></i>Decoder <b>live CSP + LDA &middot; 5-class</b></li>
+      <li><i class="dot" id="dot-deck"></i>Library <b id="deck-status">&mdash;</b></li>
+    </ul>
+    <button class="levelbtn" id="level-btn" aria-haspopup="dialog"><span id="level-btn-text">Choose a task</span><span class="caret">▾</span></button>
+    <button class="modechip" id="mode-chip" title="Difficulty (change in settings)">Easy</button>
+    <div class="topright">
+      <button class="iconbtn" id="mute" aria-pressed="false" title="Sound">🔊</button>
+      <button class="iconbtn" id="settings-btn" aria-haspopup="dialog" title="Settings">⚙</button>
+    </div>
+    <dl class="kpi-strip">
+      <div><dt>Executed as intended</dt><dd id="st-task">&mdash;</dd></div>
+      <div><dt>Decoder accuracy</dt><dd id="st-dec">&mdash;</dd></div>
+      <div><dt>Info. transfer</dt><dd id="st-itr">&mdash;</dd></div>
+      <div><dt>Throughput</dt><dd id="st-tp">&mdash;</dd></div>
+    </dl>
+  </header>
+
+  <main class="floor">
+    <!-- Cell + work order -->
+    <section class="stage panel" aria-label="Work cell and work order">
+      <div id="arena" class="arena" aria-label="Live 3D view of the PyBullet work cell. Drag to orbit, scroll to zoom, double-click to reset.">
+        <div class="feed-off" id="feed-off" hidden>
+          <strong>Simulator offline</strong>
+          <p>Start it with <code>.conda\python sim\server.py</code>, then open <code>http://localhost:4620</code>.</p>
+        </div>
+        <div class="zone-tag" data-zone="left"><i></i>BOX A<span id="cnt-left">0</span></div>
+        <div class="zone-tag" data-zone="right"><i></i>BOX B<span id="cnt-right">0</span></div>
+        <div class="zone-tag" data-zone="fists"><i></i>ASSEMBLY<span id="cnt-fists">0</span></div>
+        <div class="zone-tag" data-zone="feet"><i></i>REJECT<span id="cnt-feet">0</span></div>
+        <div class="zone-tag" data-zone="rest"><i></i>INFEED<span id="cnt-rest">0</span></div>
+        <div class="cell-meta mono"><span class="live"></span>PyBullet 240&nbsp;Hz &middot; mirrored live</div>
+        <div class="orbit-hint mono">drag to orbit &middot; scroll to zoom &middot; double-click to reset</div>
+        <div class="task" id="task">
+          <div class="job" id="job">
+            <span class="job-kicker" id="job-kicker">Part 1 of 6</span>
+            <h3 class="job-title" id="job-title">Loading…</h3>
+            <p class="job-how" id="job-how"></p>
+          </div>
+          <div class="task-side">
+            <ol class="pills" id="pills" aria-label="Shift progress"></ol>
+            <p class="task-score" id="task-score"></p>
+            <button class="btn ghost" id="new-shift">New shift</button>
+          </div>
+        </div>
+
+        <div class="banner" id="banner" hidden></div>
+        <div class="quest" id="quest" aria-live="polite">
+          <div class="q-dots" id="q-dots"></div>
+          <div class="q-main"><span class="q-obj" id="q-obj">☕</span><b class="q-say" id="q-say">Loading…</b></div>
+          <div class="q-need" id="q-need"></div>
+        </div>
+        <div class="dropzone" aria-hidden="true"><span>Drop on the robot</span></div>
+        <div class="pop" id="pop" aria-hidden="true"></div>
+        <div class="hotbar" id="hotbar"><div class="tiles" id="tiles"></div></div>
+        <div class="hud" id="hud" hidden aria-live="polite">
+          <div class="hud-head"><span class="hud-rec"></span>EEG headset<span class="hud-real" title="Real recording from the PhysioNet motor-imagery study">real EEG</span><span class="hud-state" id="hud-state">recording</span></div>
+          <canvas id="hud-scope"></canvas>
+          <div class="hud-read" id="hud-read">Listening for an intention…</div>
+        </div>
+        <div class="gamehud" id="gamehud" hidden>
+          <span class="gh-time" id="gh-time">0:00</span>
+          <span class="gh-score"><b id="gh-score">0</b> pts</span>
+          <span class="gh-combo" id="gh-combo" hidden>×2</span>
+        </div>
+        <div class="done" id="done" hidden>
+          <div class="stars" id="done-stars"><i>★</i><i>★</i><i>★</i></div>
+          <h3 id="done-title">Level complete</h3>
+          <dl class="done-stats" id="done-stats"></dl>
+          <div class="insights" id="insights"></div>
+          <p id="done-text"></p>
+          <div class="done-actions"><button class="btn ghost" id="done-all">All tasks</button><button class="btn ghost" id="done-retry">Retry</button><button class="btn primary" id="done-next">Next level</button></div>
+        </div>
+      </div>
+
+      <div class="simple-pad" id="simple-pad" aria-label="Everyday tasks">
+        <ol class="levels" id="levels" aria-label="Levels"></ol>
+        <div class="step-card" id="step-card">
+          <p class="story" id="story"></p>
+          <h3 class="step-say" id="step-say">Loading…</h3>
+          <p class="step-think" id="step-think"></p>
+        </div>
+
+        <div class="pad-foot">
+          <p class="simple-note">Each tile is a real EEG recording from the PhysioNet motor-imagery study, decoded live when you drop it on the robot.</p>
+
+        </div>
+      </div>
+
+      <div class="dock" aria-label="EEG trials">
+        <div class="dock-bar">
+          <span class="dock-title">EEG trials <span class="mono dim" id="lib-count"></span></span>
+          <div class="seg" role="group" aria-label="Paradigm" id="paradigm-seg">
+            <button class="on" data-paradigm="imagined">Imagined</button>
+            <button data-paradigm="executed">Executed</button>
+          </div>
+          <div class="chips cmd-chips" id="cmd-chips"></div>
+          <div class="chips subj-chips" id="chips"></div>
+        </div>
+        <p class="deck-hint"></p>
+        <div class="cards" id="cards"></div>
+        <div class="deck-empty" id="deck-empty" hidden>
+          <strong>No EEG library loaded.</strong>
+          <p>Run <code>python export_eeg.py</code> to build it from PhysioNet, or drop an <code>eeg-deck.js</code> file onto this page.</p>
+        </div>
+      </div>
+
+      <div class="tabs" role="tablist" aria-label="Control mode">
+        <button role="tab" class="on" data-view="task" aria-selected="true">Packing</button>
+        <button role="tab" data-view="direct" aria-selected="false">Direct control</button>
+        <button role="tab" data-view="program" aria-selected="false">Program</button>
+      </div>
+
+      <div class="direct" id="direct" hidden>
+        <div class="jogpad" id="jogpad">
+          <strong>Drop an EEG trial here, or onto the robot, to move it</strong>
+          <span>The decoder reads the trial and the arm makes one move. Tapping a trial also sends it.</span>
+        </div>
+        <ul class="jogmap" id="jogmap"></ul>
+        <ol class="joglog" id="joglog" aria-label="Recent moves"></ol>
+      </div>
+
+      <div class="order" id="order" hidden>
+        <div class="order-head">
+          <div>
+            <span class="kicker" id="wo-id">Robot program</span>
+            <h2 class="order-title">Instruction sequence</h2>
+          </div>
+          <div class="order-tools">
+            <button class="btn ghost" id="sample" title="Append one trial of every command">Add one of each</button>
+            <button class="btn ghost" id="clear">Clear</button>
+            <button class="btn primary" id="perform" disabled>Run program &#9654;</button>
+          </div>
+        </div>
+        <ol class="program" id="lines" aria-label="Robot instructions"></ol>
+        <p class="order-hint" id="order-hint"></p>
+      </div>
+    </section>
+
+    <!-- Monitor + report -->
+    <section class="monitor panel" aria-label="Signal monitor">
+      <div class="panel-head">
+        <h2>Signal monitor</h2>
+        <span class="mono dim" id="mon-id">idle</span>
+      </div>
+      <div class="scope-wrap">
+        <canvas id="scope" aria-label="C3, Cz and C4 EEG traces"></canvas>
+        <div class="phase-bar" id="phase-bar"><span data-p="rest">Baseline</span><span data-p="cue">Cue</span><span data-p="imagery">Task window</span><span data-p="decode">Decode</span><span data-p="act">Actuate</span></div>
+      </div>
+
+      <div class="brainrow">
+        <svg id="head" viewBox="0 0 200 200" aria-label="Electrode activity map">
+          <defs>
+            <radialGradient id="rg-c3"><stop offset="0" stop-color="#ffb547"/><stop offset="1" stop-color="#ffb547" stop-opacity="0"/></radialGradient>
+            <radialGradient id="rg-cz"><stop offset="0" stop-color="#b79cff"/><stop offset="1" stop-color="#b79cff" stop-opacity="0"/></radialGradient>
+            <radialGradient id="rg-c4"><stop offset="0" stop-color="#4fe3d1"/><stop offset="1" stop-color="#4fe3d1" stop-opacity="0"/></radialGradient>
+          </defs>
+          <path d="M92 18 L100 6 L108 18" class="head-line"/>
+          <path d="M18 92 q-10 8 0 18 M182 92 q10 8 0 18" class="head-line"/>
+          <circle cx="100" cy="100" r="82" class="head"/>
+          <path d="M100 18 V182 M18 100 H182" class="head-grid"/>
+          <circle cx="100" cy="100" r="54" class="head-grid"/>
+          <circle id="glow-c3" cx="52" cy="100" r="38" fill="url(#rg-c3)" opacity="0"/>
+          <circle id="glow-cz" cx="100" cy="100" r="34" fill="url(#rg-cz)" opacity="0"/>
+          <circle id="glow-c4" cx="148" cy="100" r="38" fill="url(#rg-c4)" opacity="0"/>
+          <circle cx="52" cy="100" r="7" class="elec c3"/><text x="52" y="124" class="elec-t" text-anchor="middle">C3</text>
+          <circle cx="100" cy="100" r="7" class="elec cz"/><text x="100" y="124" class="elec-t" text-anchor="middle">Cz</text>
+          <circle cx="148" cy="100" r="7" class="elec c4"/><text x="148" y="124" class="elec-t" text-anchor="middle">C4</text>
+        </svg>
+        <div class="gauges">
+          <div class="gauge" data-ch="c3"><span class="g-name">C3</span><div class="g-track"><i class="g-zero"></i><i class="g-fill" id="gf-c3"></i></div><span class="g-val mono" id="v-c3">&mdash;</span></div>
+          <div class="gauge" data-ch="cz"><span class="g-name">Cz</span><div class="g-track"><i class="g-zero"></i><i class="g-fill" id="gf-cz"></i></div><span class="g-val mono" id="v-cz">&mdash;</span></div>
+          <div class="gauge" data-ch="c4"><span class="g-name">C4</span><div class="g-track"><i class="g-zero"></i><i class="g-fill" id="gf-c4"></i></div><span class="g-val mono" id="v-c4">&mdash;</span></div>
+          <p class="g-note" id="g-note">Live 8&ndash;30&nbsp;Hz power vs. pre-cue baseline. Negative = desynchronisation.</p>
+        </div>
+      </div>
+
+      <div class="decoder">
+        <div class="dec-head"><span>Decoder posterior</span><span class="mono" id="dec-text">waiting</span></div>
+        <div class="probs" id="probs"></div>
+        <p class="dec-live" id="dec-live"></p>
+      </div>
+
+      <details class="cmdmap" open>
+        <summary>Command map</summary>
+        <table class="map" id="cmdmap"></table>
+      </details>
+
+      <div class="report" id="report">
+        <div class="panel-head"><h2>Shift report</h2><span class="mono dim" id="report-when"></span></div>
+        <div class="report-body" id="report-body">
+          <p class="report-empty">Drag EEG instructions into the program and press <b>Run program</b>. The run is scored on how many instructions the robot carried out as intended, decoder accuracy, information transfer rate and throughput.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot mono" id="source"></footer>
+
+  <div class="start" id="start">
+    <div class="start-art" aria-hidden="true"></div>
+    <div class="start-card">
+      <span class="start-kicker">A neuro-engineering game</span>
+      <h2 class="start-title">Move a robot<br>with your mind</h2>
+      <p class="start-sub">You can't use your hands today. An EEG headset reads the movement you <em>imagine</em>, and an assistive robot arm does it for you.</p>
+      <ol class="start-how">
+        <li><span>🎯</span>See the task</li>
+        <li><span>🧠</span>Pick the brain signal</li>
+        <li><span>🤖</span>Drop it on the robot</li>
+      </ol>
+      <button class="btn primary start-play" id="start-play">Play</button>
+      <p class="start-note"><b>Real EEG</b> from the PhysioNet motor-imagery study · <b>live CSP+LDA decoding</b> · <b>PyBullet</b> physics</p>
+    </div>
+  </div>
+  <div class="settings" id="settings" hidden role="dialog" aria-label="Settings">
+    <h3>Settings</h3>
+    <div class="mode-pick"><span>Difficulty</span>
+      <div class="seg" id="mode" role="group" aria-label="Difficulty">
+        <button data-mode="easy" title="The right command glows">Easy</button>
+        <button data-mode="normal" title="No glow: match the instruction to the right command (+100)">Normal</button>
+        <button data-mode="real" title="Any real recording, misreads happen: read the brain activity bars (+200)">Real decoder</button>
+      </div></div>
+    <div class="set-row"><span>Sound</span><button class="btn ghost" id="mute2">Toggle</button></div>
+    <div class="set-row"><span>Researcher console</span><button class="btn ghost" id="view-toggle" aria-pressed="false">Advanced view</button></div>
+    <details class="about"><summary>About the brain signals</summary>
+      <p>Every tile is a <b>real EEG recording</b> from the PhysioNet EEG Motor Movement/Imagery study: volunteers wearing a 64-electrode cap were cued to imagine moving their left hand, right hand, both hands or feet, or to rest.</p>
+      <p>When you drop a tile, the simulator <b>decodes that recording live</b> (CSP + LDA on 21 channels over the motor cortex) and the robot acts on what it decoded. Easy and Normal deal recordings the decoder reads correctly; Real decoder deals any recording, so misreads happen, just like a real brain-computer interface.</p>
+    </details>
+  </div>
+  <div class="levelsel" id="levelsel" hidden role="dialog" aria-label="Choose a task">
+    <div class="ls-inner">
+      <div class="ls-head"><h2>Choose a task</h2><span class="ls-total" id="ls-total"></span><button class="iconbtn" id="ls-close" title="Close">✕</button></div>
+      <div id="levelgrid"></div>
+    </div>
+  </div>
+  <div class="hand-hint" id="hand-hint" aria-hidden="true">👆</div>
+  <div class="coach" id="coach" hidden>
+    <div class="coach-hole" id="coach-hole"></div>
+    <div class="coach-box" id="coach-box"><span class="coach-n" id="coach-n">1/3</span><p id="coach-text"></p><button class="btn primary" id="coach-next">Next</button></div>
+  </div>
+
+  <div class="dropveil" id="dropveil" hidden><div><strong>Load EEG library</strong><span>eeg-deck.js or .json produced by export_eeg.py</span></div></div>
+  <div class="toast" id="toast" role="status" hidden></div>
+
+  <script src="eeg-deck.js"></script>
+  <script type="importmap">
+    { "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    } }
+  </script>
+  <script type="module" src="viewer.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

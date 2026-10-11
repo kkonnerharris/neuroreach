@@ -1,0 +1,14 @@
+# PyBullet has no Windows wheels on PyPI; conda-forge ships prebuilt ones.
+#   conda env create -p .conda -f environment.yml
+name: neuroreach
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pybullet
+  - mne-base
+  - scikit-learn
+  - numpy
+  - libblas=*=*openblas    # MKL 2026 crashes NumPy matmul on this machine
+  - pillow
+  - pytest

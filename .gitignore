@@ -1,0 +1,22 @@
+# environments
+.conda/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# raw PhysioNet downloads (re-downloaded by export_eeg.py)
+data/
+
+# build output (published separately to the neuroreach-web repo)
+dist/
+
+# uncompressed image originals; the game uses the .jpg versions
+game/assets/*.png
+game/assets/levels/sheet-*.png
+
+# scratch
+export.log
+snap.png
+timings_*.json
+sim.log
