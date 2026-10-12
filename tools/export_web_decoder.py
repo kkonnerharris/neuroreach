@@ -34,7 +34,8 @@ def main():
             scale = float(np.abs(x).max() / 32767) or 1e-12
             q = np.round(x / scale).astype(np.int16)
             chunks.append(q.tobytes())
-            trials[str(tid)] = {"model": key, "offset": offset, "scale": scale}
+            dev = key.split(".")[1] if "." in key else "cap"
+            trials.setdefault(str(tid), {})[dev] = {"model": key, "offset": offset, "scale": scale}
             offset += q.size
     (OUT / "epochs.bin").write_bytes(b"".join(chunks))
     (OUT / "decoders.json").write_text(json.dumps({"classes": ["left", "right", "fists", "feet", "rest"], "models": models, "trials": trials}))

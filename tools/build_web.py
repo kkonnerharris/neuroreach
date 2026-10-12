@@ -17,10 +17,11 @@ PB = Path(pybullet_data.getDataPath())
 
 
 def main():
-    if DIST.exists():
-        shutil.rmtree(DIST)
-    DIST.mkdir()
-    for f in ["app.js", "viewer.js", "sound.js", "styles.css", "eeg-deck.js", "eegdecoder.js", "replay.js"]:
+    DIST.mkdir(exist_ok=True)
+    for old in DIST.iterdir():  # clear the last build but keep dist/.git (the Pages repo)
+        if old.name != ".git":
+            shutil.rmtree(old) if old.is_dir() else old.unlink()
+    for f in ["app.js", "viewer.js", "sound.js", "styles.css", "eeg-deck.js", "eegdecoder.js", "replay.js", "headcontrol.js"]:
         shutil.copy2(GAME / f, DIST / f)
     (DIST / "assets" / "levels").mkdir(parents=True)
     for jpg in (GAME / "assets").glob("*.jpg"):

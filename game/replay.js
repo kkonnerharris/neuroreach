@@ -52,10 +52,12 @@
     applyFrame(data.start);
     Object.assign(state, { level: id, step: 0, levelDone: false, lampOn: false, flags: {}, holding: false, result: null, scene: level.scene, phase: "idle" });
   }
-  async function step(id, trial) {
-    await decoderReady;
-    if (!decoder.has(trial) || !level || clip) return null;
-    const dec = decoder.decode(trial), i = state.step, st = level.steps[i];
+  async function step(id, trial, device, command) {
+    if (!level || clip) return null;
+    let dec;
+    if (command && !trial) dec = { command, conf: 1, source: "motion" }; // head turn (OpenCV), not EEG
+    else { await decoderReady; if (!decoder.has(trial)) return null; dec = decoder.decode(trial, device); }
+    const i = state.step, st = level.steps[i];
     if (!st) return null;
     const ok = dec.command === st.cmd;
     state.phase = "acting"; state.result = null;
@@ -74,8 +76,8 @@
       case "levels": return json(await getJSON("levels.json"));
       case "state": return json(state);
       case "level": await loadLevel(body.id); return json({ ok: true });
-      case "step": { const r = await step(body.id, body.trial); return r ? json(r) : json({ error: "busy" }, 409); }
-      case "decode": await decoderReady; return json(decoder.decode(body.trial));
+      case "step": { const r = await step(body.id, body.trial, body.device, body.command); return r ? json(r) : json({ error: "busy" }, 409); }
+      case "decode": await decoderReady; return json(decoder.decode(body.trial, body.device));
       default: return json({ ok: true }); // order, ship, reset...: visual-only in the web edition
     }
   };

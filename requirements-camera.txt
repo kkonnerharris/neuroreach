@@ -1,0 +1,4 @@
+# Install in the existing .conda environment; preserves the known-good NumPy build.
+numpy==2.4.6
+opencv-contrib-python>=4.11,<5
+mediapipe>=0.10.30,<0.11

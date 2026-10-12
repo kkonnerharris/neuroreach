@@ -40,27 +40,30 @@ class LiveDecoder:
     def __init__(self, path: Path = DEFAULT_PATH):
         self.path = Path(path)
         self.models: dict[str, dict] = {}
-        self.index: dict[str, tuple[str, int]] = {}
+        self.index: dict[str, dict[str, tuple[str, int]]] = {}  # trial -> device -> (model key, row)
         if not self.path.exists():
             return
         with np.load(self.path, allow_pickle=False) as z:
             keys = sorted({k.split("__")[0] for k in z.files})
-            for key in keys:
+            for key in keys:  # "S001I.crown": subject/paradigm . device
                 m = {part: z[f"{key}__{part}"] for part in ("W", "coef", "intercept", "X", "ids")}
                 self.models[key] = m
+                device = key.split(".")[1] if "." in key else "cap"
                 for row, cid in enumerate(m["ids"]):
-                    self.index[str(cid)] = (key, row)
+                    self.index.setdefault(str(cid), {})[device] = (key, row)
 
     @property
     def ready(self) -> bool:
         return bool(self.models)
 
-    def decode(self, trial_id: str) -> dict:
-        """Decode one held-out trial from its raw (band-passed) EEG, right now."""
-        key, row = self.index[trial_id]
+    def decode(self, trial_id: str, device: str = "cap") -> dict:
+        """Decode one held-out trial from its raw (band-passed) EEG, right now, using only the
+        electrodes the chosen device has (cap 21, crown 8, muse 4)."""
+        devs = self.index[trial_id]
+        key, row = devs.get(device) or devs["cap"]
         m = self.models[key]
         t0 = time.perf_counter()
-        X = m["X"][row]                                  # 21 sensorimotor channels x 480 samples
+        X = m["X"][row]                                  # device channels x 480 samples
         f = features(m["W"], X)
         p = posterior(m["coef"], m["intercept"], f)
         ms = (time.perf_counter() - t0) * 1e3
@@ -68,6 +71,7 @@ class LiveDecoder:
         return {
             "trial": trial_id,
             "model": key,
+            "device": key.split(".")[1] if "." in key else "cap",
             "command": CLASSES[k],
             "conf": round(float(p[k]), 3),
             "proba": {c: round(float(v), 3) for c, v in zip(CLASSES, p)},

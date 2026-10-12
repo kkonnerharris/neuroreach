@@ -24,8 +24,10 @@
       <li><i class="dot" id="dot-deck"></i>Library <b id="deck-status">&mdash;</b></li>
     </ul>
     <button class="levelbtn" id="level-btn" aria-haspopup="dialog"><span id="level-btn-text">Choose a task</span><span class="caret">▾</span></button>
+    <button class="modechip" id="device-chip" title="EEG headset (change in settings)"></button>
     <button class="modechip" id="mode-chip" title="Difficulty (change in settings)">Easy</button>
     <div class="topright">
+      <button class="iconbtn headbtn" id="head-btn" title="Look left/right control (webcam + OpenCV)">📷<span>Look</span></button>
       <button class="iconbtn" id="mute" aria-pressed="false" title="Sound">🔊</button>
       <button class="iconbtn" id="settings-btn" aria-haspopup="dialog" title="Settings">⚙</button>
     </div>
@@ -73,9 +75,27 @@
         </div>
         <div class="dropzone" aria-hidden="true"><span>Drop on the robot</span></div>
         <div class="pop" id="pop" aria-hidden="true"></div>
+        <div class="headcam" id="headcam" data-state="loading" hidden>
+          <div class="hc-head">
+            <span class="hc-dot"></span><b>Look control</b><span class="hc-tag">OpenCV</span>
+            <button class="hc-x" id="hc-close" type="button" title="Turn off look control" aria-label="Turn off look control">✕</button>
+          </div>
+          <div class="hc-cam">
+            <canvas id="hc-view" width="256" height="192"></canvas>
+            <i class="hc-corner tl"></i><i class="hc-corner tr"></i><i class="hc-corner bl"></i><i class="hc-corner br"></i>
+            <div class="hc-calib"><div class="hc-calib-bar" id="hc-calib-bar"></div></div>
+          </div>
+          <p class="hc-status" id="hc-status" aria-live="polite">Starting camera…</p>
+          <div class="hc-arrows" id="hc-arrows">
+            <span data-dir="left"><kbd>←</kbd><em>Look left</em><small>Left hand</small></span>
+            <span data-dir="right"><kbd>→</kbd><em>Look right</em><small>Right hand</small></span>
+          </div>
+          <div class="hc-tools"><button id="hc-recal" type="button">Recalibrate</button><button id="hc-swap" type="button" title="Use if left and right come out backwards">Swap sides</button></div>
+          <p class="hc-note">Headbands carry motion sensors; your webcam stands in for one. Looks are motion commands, not EEG.</p>
+        </div>
         <div class="hotbar" id="hotbar"><div class="tiles" id="tiles"></div></div>
         <div class="hud" id="hud" hidden aria-live="polite">
-          <div class="hud-head"><span class="hud-rec"></span>EEG headset<span class="hud-real" title="Real recording from the PhysioNet motor-imagery study">real EEG</span><span class="hud-state" id="hud-state">recording</span></div>
+          <div class="hud-head"><span class="hud-rec"></span><span class="hud-device" id="hud-device">EEG headset</span><span class="hud-real" title="Real recording from the PhysioNet motor-imagery study">real EEG</span><span class="hud-state" id="hud-state">recording</span></div>
           <canvas id="hud-scope"></canvas>
           <div class="hud-read" id="hud-read">Listening for an intention…</div>
         </div>
@@ -223,8 +243,9 @@
     <div class="start-card">
       <span class="start-kicker">A neuro-engineering game</span>
       <h2 class="start-title">Move a robot<br>with your mind</h2>
-      <p class="start-sub">You can't use your hands today. An EEG headset reads the movement you <em>imagine</em>, and an assistive robot arm does it for you.</p>
-      <ol class="start-how">
+      <p class="start-sub">You can't use your hands today. An EEG headband reads the movement you <em>imagine</em>, and an assistive robot arm does it for you.</p>
+      <div class="start-dev"><span class="sd-label">Choose your headset</span><div class="devpick"></div><p class="sd-blurb" id="start-dev-blurb"></p></div>
+      <ol class="start-how" hidden>
         <li><span>🎯</span>See the task</li>
         <li><span>🧠</span>Pick the brain signal</li>
         <li><span>🤖</span>Drop it on the robot</li>
@@ -235,6 +256,7 @@
   </div>
   <div class="settings" id="settings" hidden role="dialog" aria-label="Settings">
     <h3>Settings</h3>
+    <div class="mode-pick"><span>EEG headset · held-out accuracy (5 commands, chance 20%)</span><div class="devpick"></div><p class="dev-blurb" id="dev-blurb"></p></div>
     <div class="mode-pick"><span>Difficulty</span>
       <div class="seg" id="mode" role="group" aria-label="Difficulty">
         <button data-mode="easy" title="The right command glows">Easy</button>
@@ -272,5 +294,6 @@
   </script>
   <script type="module" src="viewer.js"></script>
   <script src="app.js"></script>
+  <script src="headcontrol.js"></script>
 </body>
 </html>

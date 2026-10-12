@@ -15,7 +15,34 @@
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const SIM = location.protocol.startsWith("http");
   const MAX_STEPS = 16;
-  const CH = [["c3", "C3", "#ffb547"], ["cz", "Cz", "#b79cff"], ["c4", "C4", "#4fe3d1"]];
+  // EEG devices: which electrodes each one has, and the traces shown for it.
+  const LANE_COLORS = ["#ffb547", "#b79cff", "#4fe3d1", "#ff8fb1"];
+  const DEVICE = {
+    cap: { name: "Lab EEG cap", short: "Lab cap", ch: 21, icon: "🧢", lanes: [["c3", "C3"], ["cz", "Cz"], ["c4", "C4"]],
+      sites: ["FC5", "FC3", "FC1", "FCz", "FC2", "FC4", "FC6", "C5", "C3", "C1", "Cz", "C2", "C4", "C6", "CP5", "CP3", "CP1", "CPz", "CP2", "CP4", "CP6"],
+      blurb: "Research cap: 21 electrodes right over the motor cortex." },
+    crown: { name: "Crown-style headband", short: "Crown", ch: 8, icon: "🎧", lanes: [["c3", "C3"], ["cp3", "CP3"], ["c4", "C4"], ["cp4", "CP4"]],
+      sites: ["C3", "C4", "CP3", "CP4", "F5", "F6", "PO3", "PO4"],
+      blurb: "Consumer headband over the top of the head: 8 sensors, 4 of them over the motor strip." },
+    muse: { name: "Muse-style headband", short: "Muse", ch: 4, icon: "🎀", lanes: [["af7", "AF7"], ["af8", "AF8"], ["t9", "TP9*"], ["t10", "TP10*"]],
+      sites: ["AF7", "AF8", "T9", "T10"],
+      blurb: "Forehead + behind-the-ear headband: 4 sensors, none over the motor cortex. (*TP9/TP10 approximated by T9/T10.)" },
+  };
+  let CH = [];
+  const devOf = (c) => c?.dev?.[S.device] || c; // this device's decoder output for a trial
+  function applyDeviceLanes() { CH = DEVICE[S.device].lanes.map(([k, n], i) => [k, n, LANE_COLORS[i]]); }
+  // electrode positions on a top-down head (nose up), for the little head maps
+  const SITE_XY = { FC5: [-.72, -.24], FC3: [-.46, -.26], FC1: [-.22, -.27], FCz: [0, -.27], FC2: [.22, -.27], FC4: [.46, -.26], FC6: [.72, -.24],
+    C5: [-.75, 0], C3: [-.5, 0], C1: [-.25, 0], Cz: [0, 0], C2: [.25, 0], C4: [.5, 0], C6: [.75, 0],
+    CP5: [-.72, .24], CP3: [-.46, .26], CP1: [-.22, .27], CPz: [0, .27], CP2: [.22, .27], CP4: [.46, .26], CP6: [.72, .24],
+    F5: [-.55, -.5], F6: [.55, -.5], PO3: [-.24, .7], PO4: [.24, .7], AF7: [-.45, -.78], AF8: [.45, -.78], T9: [-.98, .1], T10: [.98, .1] };
+  function headSvg(dev, size = 64) {
+    const on = new Set(DEVICE[dev].sites), dot = ([x, y], lit) => `<circle cx="${x * 46}" cy="${y * 46}" r="${lit ? 5.2 : 2.6}" class="${lit ? "lit" : "off"}"/>`;
+    const motor = `<ellipse cx="0" cy="0" rx="40" ry="12" class="strip"/>`;
+    return `<svg class="headmap" viewBox="-60 -62 120 120" width="${size}" height="${size}" aria-hidden="true">
+      <path d="M-7 -49 L0 -58 L7 -49" class="nose"/><path d="M-50 -6 q-7 6 0 12 M50 -6 q7 6 0 12" class="ear"/>
+      <circle r="49" class="skull"/>${motor}${Object.entries(SITE_XY).map(([n, xy]) => dot(xy, on.has(n))).join("")}</svg>`;
+  }
 
   const CMD = {
     left:  { name: "Left fist",  icon: "◀", zone: "BOX A",    act: "Pack in BOX A",     jog: "Rotate left",  part: "Computer",    color: "#5b9bff", rgba: [0.36, 0.61, 1, 1],   sig: "μ-ERD over C4 (right motor cortex)" },
@@ -32,6 +59,9 @@
     steps: [], busy: false, runSeq: 1, view: "task", jogs: [], jogSeq: 0, task: null,
     sim: null, counts: {}, history: [],
   };
+  S.device = (() => { try { return localStorage.getItem("nr-device") || "crown"; } catch { return "crown"; } })();
+  if (!DEVICE[S.device]) S.device = "crown";
+  applyDeviceLanes();
 
   // ---------------------------------------------------------------- library
   function loadDeck(deck) {
@@ -436,7 +466,12 @@
   };
   // The board: all five commands, two real recordings each (10 tiles), in fixed "controller" slots.
   const SLOTS = 2;
-  const easyPool = (k) => S.cards.filter((c) => c.label === k && c.paradigm === "imagined" && (S.hard || c.pred === k));
+  const easyPool = (k) => {
+    const all = S.cards.filter((c) => c.label === k && c.paradigm === "imagined");
+    if (S.hard) return all;
+    const clean = all.filter((c) => devOf(c).pred === k); // recordings this device's decoder reads correctly
+    return clean.length ? clean : all;
+  };
   const tileCard = {}; // "left:0" -> card
   function nextTileCard(slot) {
     const k = slot.split(":")[0], pool = easyPool(k);
@@ -536,19 +571,24 @@
     fists: ["C3+C4", null, "both motor cortices"], feet: ["Cz", "cz", "foot area at the vertex"], rest: [null, null, "no task rhythm"],
   };
   function renderInsights(r) {
-    const log = r.log || [], n = log.length;
-    if (!n) { $("#insights").innerHTML = ""; return; }
+    const all = r.log || [], log = all.filter((x) => !x.head), n = log.length;
+    const headN = all.filter((x) => x.head && x.ok).length;
+    if (!all.length) { $("#insights").innerHTML = ""; return; }
+    if (!n) { $("#insights").innerHTML = `<div class="ins-head"><span>📷 Look control</span><span class="ins-kpis">${headN} steps by looking left/right</span></div>`; return; }
     const acc = log.filter((x) => x.dec.command === x.card.label).length / n;
     const P = Math.min(acc, 0.999), N = 5;
     const bits = P <= 1 / N ? 0 : Math.log2(N) + P * Math.log2(P) + (1 - P) * Math.log2((1 - P) / (N - 1));
     const secs = ((r.end - r.t0) / 1000) / n;
     const rows = log.filter((x) => x.ok).map(({ card, dec }) => {
       const [ch, key, area] = SIGNATURE[card.label];
+      const sites = DEVICE[S.device].sites, sees = ch == null || ch.split("+").every((c) => sites.includes(c));
       const v = key ? erdOf(card, key) : card.label === "fists" ? Math.min(erdOf(card, "c3"), erdOf(card, "c4")) : null;
-      const what = v == null ? "no motor rhythm change (rest)" : `μ-rhythm ${v < 0 ? "suppression" : "change"} over ${ch} (${area}): <b>${v > 0 ? "+" : ""}${Math.round(v)}%</b>`;
+      const what = v == null ? "no motor rhythm change (rest)"
+        : sees ? `μ-rhythm ${v < 0 ? "suppression" : "change"} over ${ch} (${area}): <b>${v > 0 ? "+" : ""}${Math.round(v)}%</b>`
+          : `${DEVICE[S.device].short} has no sensor over ${ch} (${area}); decoded from ${sites.join(", ")}`;
       return `<li style="--c:${CMD[card.label].color}"><span class="ins-ico">${PLAIN[card.label].icon}</span><span><b>${PLAIN[card.label].label}</b> · ${what}<small>decoded ${Math.round(dec.conf * 100)}% · ${card.id}</small></span></li>`;
     }).join("");
-    $("#insights").innerHTML = `<div class="ins-head"><span>Brain signals behind this run</span><span class="ins-kpis">decoder ${Math.round(acc * 100)}% · ITR ${((bits * 60) / Math.max(secs, 1)).toFixed(1)} bit/min</span></div><ul>${rows}</ul>`;
+    $("#insights").innerHTML = `<div class="ins-head"><span>${DEVICE[S.device].icon} ${DEVICE[S.device].name} · ${DEVICE[S.device].ch} ch</span><span class="ins-kpis">${headN ? `${headN} by head turn · ` : ""}decoder ${Math.round(acc * 100)}% · ITR ${((bits * 60) / Math.max(secs, 1)).toFixed(1)} bit/min</span></div><ul>${rows}</ul>`;
   }
 
   // ---------------------------------------------------------------- level select + settings
@@ -599,9 +639,11 @@
     $("#q-say").textContent = st.say;
     const m = PLAIN[st.cmd];
     $("#q-need").style.setProperty("--c", CMD[st.cmd].color);
-    $("#q-need").innerHTML = S.mode === "easy"
+    const HEAD = { left: "←", right: "→" };
+    const headHint = window.NR_headOn && HEAD[st.cmd] ? `<span class="q-head">or look ${HEAD[st.cmd]}</span>` : "";
+    $("#q-need").innerHTML = headHint + (S.mode === "easy"
       ? `<span class="q-chip"><span>${m.icon}</span>${m.label}</span><span class="q-hint">${st.think.replace(/^Imagine /, "imagine ")}</span>`
-      : `<span class="q-hint strong">🧠 ${st.think}</span>`;
+      : `<span class="q-hint strong">🧠 ${st.think}</span>`);
   }
   // a ghost hand demonstrates the drag until the player has done it twice
   let handAnim = null;
@@ -676,12 +718,19 @@
     });
   }
 
+  // head turns (OpenCV) arrive here: a motion command, not an EEG recording
+  window.NR_headCommand = (cmd, dir) => {
+    if (!document.body.classList.contains("simple") || !$("#start").hidden) return;
+    runLevelStep({ id: "head", label: cmd, head: true, dir });
+  };
+  window.addEventListener("headcontrol", () => renderLevel());
   async function runLevelStep(card) {
     const lv = level(), st = currentStep();
     if (!lv || !st || !card) return;
     if (S.sim?.levelDone) return toast("Level complete. Pick the next level.");
     if (S.busy) return toast("The robot is still busy");
     if (S.mode === "easy" && card.label !== st.cmd) return nudge(card, st);
+    if (card.head) return runHeadStep(card, lv, st);
     S.busy = true;
     $$("#tiles .tile").forEach((t) => t.classList.toggle("busy", t.dataset.id === card.id));
     $("#hud").hidden = false; $("#hud").className = "hud";
@@ -691,7 +740,7 @@
     await playback(card, 1.6, (i) => hudDraw(card, i));
     $("#hud-state").textContent = "decoding";
     const runId = `${card.id}#${++S.jogSeq}`;
-    const resp = await postJson("/api/step", { id: runId, trial: card.id }); // decoded live on the sim server
+    const resp = await postJson("/api/step", { id: runId, trial: card.id, device: S.device }); // decoded live, this device's electrodes only
     const dec = resp?.decode || asDecode(card);
     const match = dec.command === st.cmd;
     $("#hud").className = `hud ${match ? "ok" : "bad"}`;
@@ -722,34 +771,62 @@
     for (const [slot, c] of Object.entries(tileCard)) if (c?.id === card.id) nextTileCard(slot); // fresh recording in that slot
     S.busy = false;
     renderLevel();
-    if (S.sim?.levelDone) {
-      lv.done = true;
-      const r = S.run || { t0: performance.now(), misses: 0, points: 0 };
-      r.end = performance.now();
-      const secs = (r.end - r.t0) / 1000, par = lv.par || 40;
-      const timeBonus = Math.max(0, Math.round((par - secs) * 5));
-      r.points += timeBonus + (S.mode === "real" ? 200 : S.mode === "normal" ? 100 : 0);
-      const stars = r.misses === 0 && secs <= par ? 3 : r.misses <= 1 ? 2 : 1;
-      const prev = S.progress[lv.id];
-      S.progress[lv.id] = { stars: Math.max(stars, prev?.stars || 0), best: Math.max(r.points, prev?.best || 0) };
-      saveProgress(); renderHud(); renderLevel();
-      const last = S.lv >= S.levels.length - 1;
-      $("#done-title").textContent = `${lv.icon} ${lv.title}`;
-      $$("#done-stars i").forEach((el, k) => { el.className = ""; void el.offsetWidth; if (k < stars) { el.className = "on"; el.style.animationDelay = `${0.25 + k * 0.28}s`; } });
-      $("#done-stats").innerHTML = `<div><dt>Time</dt><dd>${fmtTime(secs)} <small>par ${fmtTime(par)}</small></dd></div>
-        <div><dt>Misreads</dt><dd>${r.misses}</dd></div><div><dt>Score</dt><dd>${r.points}${prev && r.points > prev.best ? " <small>new best!</small>" : ""}</dd></div>`;
-      renderInsights(r);
-      $("#done-text").textContent = stars < 3 ? (r.misses ? "Tip: pick recordings with a strong drop on the right channel, and go a little faster for 3 stars." : `Under ${fmtTime(par)} earns 3 stars.`)
-        : last ? "Perfect. You finished every task using only brain signals." : `Perfect run. Next up: ${S.levels[S.lv + 1].icon} ${S.levels[S.lv + 1].title}`;
-      $("#done-next").textContent = last ? "Back to the start" : "Next level";
-      $("#done").hidden = false;
-      window.dispatchEvent(new CustomEvent("sfx", { detail: "level" }));
-    }
+    if (S.sim?.levelDone) finishLevel(lv);
     setTimeout(() => { if (!S.busy) $("#hud").hidden = true; }, 3500);
   }
   $("#levels").addEventListener("click", (e) => { const b = e.target.closest("[data-lv]"); if (b) loadLevel(+b.dataset.lv); });
   $("#done-next").addEventListener("click", () => loadLevel(S.lv >= S.levels.length - 1 ? 0 : S.lv + 1));
   $("#done-retry").addEventListener("click", () => loadLevel(S.lv));
+  async function runHeadStep(card, lv, st) {
+    S.busy = true;
+    $("#hud").hidden = false; $("#hud").className = "hud";
+    $("#hud-state").textContent = "motion";
+    $("#hud-read").innerHTML = `Head turn ${({ left: "←", right: "→", up: "↑", down: "↓" })[card.dir]}: <b>${PLAIN[card.label].label}</b> (motion sensor, not EEG)`;
+    const runId = `head#${++S.jogSeq}`;
+    const resp = await postJson("/api/step", { id: runId, command: card.label, source: "head" });
+    const res = resp ? await waitFor((s) => s.result && s.result.trial === runId, 30000) : null;
+    if (resp) await waitFor((s) => s.phase === "idle", 15000);
+    const ok = res?.result?.ok ?? card.label === st.cmd;
+    S.run?.log.push({ card, dec: { command: card.label, conf: 1 }, ok, head: true });
+    window.dispatchEvent(new CustomEvent("sfx", { detail: ok ? "ok" : "fail" }));
+    if (S.run) {
+      if (ok) { const gain = 100 * S.run.combo; S.run.points += gain; popPoints(`+${gain}`, true); S.run.combo = Math.min(4, S.run.combo + 1); }
+      else { S.run.misses++; S.run.combo = 1; popPoints("Missed", false); }
+      renderHud();
+    }
+    S.hintCmd = ok ? null : st.cmd;
+    const b = $("#banner");
+    b.className = `banner ${ok ? "ok" : "bad"}`;
+    b.innerHTML = ok ? `<b>✓ ${st.say}</b><span>Head turn → ${PLAIN[card.label].label}. The robot did it.</span>`
+      : `<b>Head turn read as ${PLAIN[card.label].label}</b><span>This step needs ${PLAIN[st.cmd].icon} ${PLAIN[st.cmd].label}.</span>`;
+    b.hidden = false; clearTimeout(banner.t); banner.t = setTimeout(() => (b.hidden = true), 2400);
+    S.busy = false;
+    renderLevel();
+    if (S.sim?.levelDone) finishLevel(lv);
+  }
+  function finishLevel(lv) {
+    lv.done = true;
+    const r = S.run || { t0: performance.now(), misses: 0, points: 0 };
+    r.end = performance.now();
+    const secs = (r.end - r.t0) / 1000, par = lv.par || 40;
+    const timeBonus = Math.max(0, Math.round((par - secs) * 5));
+    r.points += timeBonus + (S.mode === "real" ? 200 : S.mode === "normal" ? 100 : 0);
+    const stars = r.misses === 0 && secs <= par ? 3 : r.misses <= 1 ? 2 : 1;
+    const prev = S.progress[lv.id];
+    S.progress[lv.id] = { stars: Math.max(stars, prev?.stars || 0), best: Math.max(r.points, prev?.best || 0) };
+    saveProgress(); renderHud(); renderLevel();
+    const last = S.lv >= S.levels.length - 1;
+    $("#done-title").textContent = `${lv.icon} ${lv.title}`;
+    $$("#done-stars i").forEach((el, k) => { el.className = ""; void el.offsetWidth; if (k < stars) { el.className = "on"; el.style.animationDelay = `${0.25 + k * 0.28}s`; } });
+    $("#done-stats").innerHTML = `<div><dt>Time</dt><dd>${fmtTime(secs)} <small>par ${fmtTime(par)}</small></dd></div>
+      <div><dt>Misreads</dt><dd>${r.misses}</dd></div><div><dt>Score</dt><dd>${r.points}${prev && r.points > prev.best ? " <small>new best!</small>" : ""}</dd></div>`;
+    renderInsights(r);
+    $("#done-text").textContent = stars < 3 ? (r.misses ? "Tip: pick recordings with a strong drop on the right channel, and go a little faster for 3 stars." : `Under ${fmtTime(par)} earns 3 stars.`)
+      : last ? "Perfect. You finished every task using only brain signals." : `Perfect run. Next up: ${S.levels[S.lv + 1].icon} ${S.levels[S.lv + 1].title}`;
+    $("#done-next").textContent = last ? "Back to the start" : "Next level";
+    $("#done").hidden = false;
+    window.dispatchEvent(new CustomEvent("sfx", { detail: "level" }));
+  }
   function nudge(card, st) { // Easy mode: point at the right tile instead of failing
     const need = PLAIN[st.cmd], wrong = $(`#tiles .tile[data-id="${card.id}"]`);
     wrong?.classList.remove("nope"); void wrong?.offsetWidth; wrong?.classList.add("nope");
@@ -760,6 +837,30 @@
     const right = $("#tiles .tile.on"); right?.classList.remove("pulse"); void right?.offsetWidth; right?.classList.add("pulse");
   }
   function renderModeChip() { $("#mode-chip").textContent = { easy: "Easy", normal: "Normal", real: "Real decoder" }[S.mode]; }
+  function deviceAcc(dev) { // pooled held-out accuracy on imagined movement, from the library
+    let n = 0, ok = 0;
+    for (const c of S.cards) if (c.paradigm === "imagined" && c.dev) { n++; if (c.dev[dev].pred === c.label) ok++; }
+    return n ? Math.round((ok / n) * 100) : null;
+  }
+  function renderDevicePickers() {
+    const html = Object.entries(DEVICE).map(([k, d]) => `<button class="devopt ${k === S.device ? "on" : ""}" data-dev="${k}">
+      ${headSvg(k, 46)}<span class="dv-t"><b>${d.short}</b><small>${d.ch} sensors</small></span><span class="dv-acc">${deviceAcc(k) ?? "–"}<small>%</small></span></button>`).join("");
+    $$(".devpick").forEach((el) => (el.innerHTML = html));
+    $("#dev-blurb").textContent = DEVICE[S.device].blurb;
+    $("#start-dev-blurb").textContent = DEVICE[S.device].blurb;
+    $("#device-chip").innerHTML = `${DEVICE[S.device].icon} ${DEVICE[S.device].short} · ${DEVICE[S.device].ch} ch`;
+    $("#hud-device").innerHTML = `${headSvg(S.device, 30)}<span>${DEVICE[S.device].name}</span>`;
+  }
+  function setDevice(dev) {
+    if (!DEVICE[dev] || S.busy) return;
+    S.device = dev;
+    try { localStorage.setItem("nr-device", dev); } catch {}
+    applyDeviceLanes();
+    for (const k in tileCard) delete tileCard[k]; // a fresh hand of recordings this device can read
+    renderDevicePickers(); renderLevel();
+  }
+  document.addEventListener("click", (e) => { const b = e.target.closest(".devopt"); if (b) setDevice(b.dataset.dev); });
+  $("#device-chip").addEventListener("click", (e) => { e.stopPropagation(); $("#settings").hidden = false; });
   function setMode(m) {
     S.mode = m; S.hard = m === "real";
     try { localStorage.setItem("nr-mode", m); } catch {}
@@ -770,6 +871,7 @@
   }
   $("#mode").addEventListener("click", (e) => { const b = e.target.closest("[data-mode]"); if (b && !S.busy) setMode(b.dataset.mode); });
   setMode(S.mode);
+  window.addEventListener("load", renderDevicePickers);
   // keys 1-5 send the top-row recording of each command (left, right, both hands, feet, relax)
   window.addEventListener("keydown", (e) => {
     if (!document.body.classList.contains("simple") || !$("#start").hidden || !$("#coach").hidden || e.target.closest?.("input, textarea, select")) return;
@@ -982,6 +1084,7 @@
   function setGauges(vals, final = false) {
     for (const [k] of CH) {
       const v = vals[k], f = $(`#gf-${k}`);
+      if (!f) continue; // the research monitor only has C3/Cz/C4 gauges
       if (v === undefined) { f.style.width = "0"; $(`#v-${k}`).textContent = "—"; $(`#glow-${k}`).setAttribute("opacity", 0); continue; }
       const x = clamp(v, -100, 100) / 100;
       f.style.left = `${50 + Math.min(x, 0) * 50}%`;
@@ -993,7 +1096,7 @@
       ? "Trial μ-band (8&ndash;13&nbsp;Hz) ERD over the 0.5&ndash;3.5&nbsp;s task window. Negative = desynchronisation."
       : "Live 8&ndash;30&nbsp;Hz power vs. pre-cue baseline. Negative = desynchronisation.";
   }
-  const asDecode = (card) => ({ command: card.pred, conf: card.conf, proba: card.proba }); // offline fallback
+  const asDecode = (card) => { const d = devOf(card); return { command: d.pred, conf: d.conf, proba: d.proba }; }; // offline fallback
   function renderProbs(dec) {
     $("#probs").innerHTML = KEYS.map((k) => {
       const v = dec ? dec.proba[k] ?? 0 : 0, win = dec && dec.command === k;
@@ -1098,7 +1201,7 @@
   renderJogMap();
   $(".deck-hint").textContent = "Drag a glowing card onto the robot to pack the computer. Each card is real EEG, labeled with what the person did.";
   try {
-    if (window.EEG_DECK) { loadDeck(window.EEG_DECK); newShift(); if (SIM) initLevels(); }
+    if (window.EEG_DECK) { loadDeck(window.EEG_DECK); newShift(); renderDevicePickers(); if (SIM) initLevels(); }
     else { $("#deck-empty").hidden = false; renderSteps(); }
   } catch (err) {
     $("#deck-empty").hidden = false;

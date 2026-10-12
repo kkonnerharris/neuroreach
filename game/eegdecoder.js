@@ -11,9 +11,9 @@ export class BrowserDecoder {
     return this;
   }
   has(id) { return !!this.meta?.trials[id]; }
-  decode(id) {
+  decode(id, device = "cap") {
     const t0 = performance.now();
-    const tr = this.meta.trials[id], m = this.meta.models[tr.model];
+    const devs = this.meta.trials[id], tr = devs[device] || devs.cap, m = this.meta.models[tr.model]; // only this device's electrodes
     const [nch, nt] = m.shape, W = m.W, k = W.length;
     const x = this.data.subarray(tr.offset, tr.offset + nch * nt), s = tr.scale;
     const f = new Float64Array(k);
@@ -32,7 +32,7 @@ export class BrowserDecoder {
     const p = e.map((v) => v / sum);                                                          // softmax
     const best = p.indexOf(Math.max(...p)), C = this.meta.classes;
     return {
-      trial: id, model: tr.model, command: C[best], conf: Math.round(p[best] * 1000) / 1000,
+      trial: id, model: tr.model, device: tr.model.split(".")[1] || "cap", command: C[best], conf: Math.round(p[best] * 1000) / 1000,
       proba: Object.fromEntries(C.map((c, i) => [c, Math.round(p[i] * 1000) / 1000])),
       samples: [nch, nt], ms: Math.round((performance.now() - t0) * 1000) / 1000,
     };

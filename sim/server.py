@@ -56,7 +56,8 @@ def empty_bins() -> dict:
 
 
 class Sim:
-    def __init__(self, gui: bool):
+    def __init__(self, gui: bool, head_camera=None):
+        self.head_camera = head_camera
         self.gui = gui
         self.c = p.connect(p.GUI, options="--width=1280 --height=760") if gui else p.connect(p.DIRECT)
         if gui:
@@ -295,6 +296,7 @@ class Sim:
     def loop(self):
         job = self.job_boot()
         sim_t, wall0, last_pose = 0.0, time.perf_counter(), 0.0
+        last_head = time.monotonic()
         while self.running:
             if job is None:
                 try:
@@ -303,6 +305,19 @@ class Sim:
                            "level": self.job_level, "step": self.job_step}[cmd[0]](*cmd[1:])
                 except queue.Empty:
                     pass
+            if self.head_camera is not None:
+                now_head = time.monotonic()
+                if self.head_camera.closed.is_set():
+                    self.running = False
+                    break
+                if now_head - last_head >= 1 / 30:
+                    head = self.head_camera.snapshot()
+                    self._set(headControl=head, inputMode="opencv")
+                    if job is None and any(head["velocity"]):
+                        from head_camera import steer_tip
+                        self.arm.tip = steer_tip(self.arm.tip, head["velocity"], now_head - last_head)
+                        self.arm._apply_ik(self.arm.tip)
+                    last_head = now_head
             dirty = False
             while not self.visual.empty():
                 dirty = True
@@ -394,7 +409,7 @@ def make_handler(sim: Sim):
             trial = data.get("trial")
             if not trial or trial not in sim.decoder.index:
                 return None
-            dec = sim.decoder.decode(trial)
+            dec = sim.decoder.decode(trial, data.get("device", "cap"))
             with sim.lock:
                 sim.state["lastDecode"] = dec
             log.info("decoded %s live in %.2f ms -> %s (%.0f%%)", trial, dec["ms"], dec["command"], dec["conf"] * 100)
@@ -434,7 +449,10 @@ def make_handler(sim: Sim):
                     return self._json({"error": "unknown level"}, 404)
                 sim.cmds.put(("level", data["id"]))
             elif self.path == "/api/step":
-                dec = self._live(data)
+                if data.get("command") in COMMANDS and not data.get("trial"):  # motion command (head turn), not EEG
+                    dec = {"command": data["command"], "conf": 1.0, "source": data.get("source", "motion")}
+                else:
+                    dec = self._live(data)
                 if not dec:
                     return self._json({"error": "unknown trial"}, 404)
                 sim.cmds.put(("step", str(data.get("id")), dec))
@@ -480,10 +498,18 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--gui", action="store_true", help="also open the native PyBullet window")
     ap.add_argument("--port", type=int, default=4620)
+    ap.add_argument("--head-camera", action="store_true", help="Open native OpenCV webcam control for this arm")
+    ap.add_argument("--camera", type=int, default=0, help="OpenCV camera index")
+    ap.add_argument("--deadzone", type=float, default=7, help="Neutral head angle in degrees")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-    sim = Sim(args.gui)
+    head_camera = None
+    if args.head_camera:
+        from head_camera import NativeHeadCamera
+        model = Path(__file__).resolve().parent.parent / "models" / "face_landmarker.task"
+        head_camera = NativeHeadCamera(model, args.camera, args.deadzone)
+    sim = Sim(args.gui or args.head_camera, head_camera=head_camera)
     server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(sim))
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -495,6 +521,8 @@ def main():
     except KeyboardInterrupt:
         sim.running = False
     finally:
+        if head_camera is not None:
+            head_camera.close()
         server.shutdown()
 
 

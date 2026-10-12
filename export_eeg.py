@@ -63,8 +63,14 @@ DISPLAY_SFREQ = 80.0
 DISPLAY_WINDOW = (-0.5, 4.0)
 TASK_WINDOW = (0.5, 3.5)   # window the classifier sees (skips the cue-evoked response)
 BASE_WINDOW = (-1.0, 0.0)  # pre-cue, for ERD%
-CHANNELS = ("C3", "Cz", "C4")
 MOTOR_CHANNELS = [f"{row}{n}" for row in ("FC", "C", "CP") for n in ("5", "3", "1", "z", "2", "4", "6")]
+# Which electrodes each device actually has. The decoder for a device is trained on only these.
+DEVICES = {
+    "cap": MOTOR_CHANNELS,                                           # lab cap: the 21-site sensorimotor strip
+    "crown": ["C3", "C4", "CP3", "CP4", "F5", "F6", "PO3", "PO4"],   # Neurosity Crown-style 8-ch headband
+    "muse": ["AF7", "AF8", "T9", "T10"],                             # Muse-style 4-ch headband (T9/T10 = nearest sites to TP9/TP10)
+}
+CHANNELS = ("C3", "Cz", "C4", "CP3", "CP4", "AF7", "AF8", "T9", "T10")  # traces shown in the game
 DATA_DIR = Path(__file__).parent / "data"
 OUT = Path(__file__).parent / "game" / "eeg-deck.js"
 MODELS = Path(__file__).parent / "models" / "live_decoders.npz"
@@ -102,7 +108,8 @@ def load(subject: int, paradigm: str) -> mne.io.BaseRaw:
     eegbci.standardize(raw)
     raw.set_montage(mne.channels.make_standard_montage("standard_1005"))
     raw.set_eeg_reference("average", projection=False, verbose="error")  # reference uses all 64 channels
-    return raw.pick(MOTOR_CHANNELS)  # then keep the sensorimotor strip: standard for MI, ~3x less memory
+    keep = sorted(set(MOTOR_CHANNELS) | {c for chans in DEVICES.values() for c in chans} | set(CHANNELS))
+    return raw.pick(keep)  # every channel any device or display needs
 
 
 def epoch(raw, l_freq, h_freq) -> mne.Epochs:
@@ -123,7 +130,8 @@ def erd_percent(x: np.ndarray, times: np.ndarray) -> float:
 def process(subject: int, paradigm: str) -> dict | None:
     raw = load(subject, paradigm)
     ep, mu = epoch(raw, 8.0, 30.0), epoch(raw, 8.0, 13.0)
-    ptp = np.ptp(ep.get_data(), axis=-1).max(axis=1)
+    motor = [ep.ch_names.index(c) for c in MOTOR_CHANNELS]
+    ptp = np.ptp(ep.get_data()[:, motor], axis=-1).max(axis=1)   # forehead blinks must not drop motor trials
     keep = ptp < 300e-6
     n_dropped = int((~keep).sum())
     code_to_cls = {i + 1: c for i, c in enumerate(CLASSES)}
@@ -143,35 +151,32 @@ def process(subject: int, paradigm: str) -> dict | None:
     y = np.array([CLASSES.index(l) for l in labels])
 
     times = ep.times
-    X = ep.get_data()[:, :, (times >= TASK_WINDOW[0]) & (times < TASK_WINDOW[1])]
+    X_all = ep.get_data()[:, :, (times >= TASK_WINDOW[0]) & (times < TASK_WINDOW[1])]
     tr, te = train_test_split(np.arange(len(y)), test_size=0.3, stratify=y, random_state=SEED)
-    clf = Pipeline([
-        ("csp", CSP(n_components=10, reg="ledoit_wolf", log=True)),
-        ("lda", LinearDiscriminantAnalysis(solver="lsqr", shrinkage="auto")),
-    ])
-    cv = cross_val_score(clf, X[tr], y[tr], cv=StratifiedKFold(5, shuffle=True, random_state=SEED))
-    clf.fit(X[tr], y[tr])
-    proba = clf.predict_proba(X[te])
-    pred = proba.argmax(1)
-    test_acc = float((pred == y[te]).mean())
-    log.info("S%03d %-8s n=%d (dropped %d)  train CV=%.2f  held-out=%.2f  (chance 0.20)",
-             subject, paradigm, len(y), n_dropped, cv.mean(), test_acc)
-    if cv.mean() < MIN_TRAIN_CV:
+    dev = {}
+    for name, chans in DEVICES.items():
+        X = X_all[:, [ep.ch_names.index(c) for c in chans]]
+        nc = min(10, len(chans))
+        clf = Pipeline([
+            ("csp", CSP(n_components=nc, reg="ledoit_wolf", log=True)),
+            ("lda", LinearDiscriminantAnalysis(solver="lsqr", shrinkage="auto")),
+        ])
+        cv = cross_val_score(clf, X[tr], y[tr], cv=StratifiedKFold(5, shuffle=True, random_state=SEED))
+        clf.fit(X[tr], y[tr])
+        proba_sk = clf.predict_proba(X[te])
+        # the learned weights, re-run as plain NumPy on float32 epochs: exactly what live decoding computes
+        W = clf.named_steps["csp"].filters_[:nc]
+        lda = clf.named_steps["lda"]
+        Xte = X[te].astype(np.float32)
+        assert np.allclose(posterior(lda.coef_, lda.intercept_, features(W, X[te])), proba_sk, atol=1e-6), "live math != sklearn"
+        proba = posterior(lda.coef_, lda.intercept_, features(W, Xte))
+        pred = proba.argmax(1)
+        dev[name] = {"cv": float(cv.mean()), "acc": float((pred == y[te]).mean()), "pred": pred, "proba": proba,
+                     "live": {"W": W, "coef": lda.coef_, "intercept": lda.intercept_, "X": Xte}}
+    log.info("S%03d %-8s n=%d (dropped %d)  held-out: cap %.2f  crown %.2f  muse %.2f  (chance 0.20)",
+             subject, paradigm, len(y), n_dropped, dev["cap"]["acc"], dev["crown"]["acc"], dev["muse"]["acc"])
+    if dev["cap"]["cv"] < MIN_TRAIN_CV:   # subjects are chosen once (by the cap's training CV) for every device
         return None
-
-    # Pull the learned weights out of the pipeline and re-run them as plain NumPy on the
-    # float32 epochs the sim server will hold. Card predictions come from this path, so what
-    # the library shows is exactly what live decoding will produce.
-    W = clf.named_steps["csp"].filters_[:10]
-    lda = clf.named_steps["lda"]
-    Xte = X[te].astype(np.float32)
-    live = posterior(lda.coef_, lda.intercept_, features(W, Xte))
-    assert np.allclose(posterior(lda.coef_, lda.intercept_, features(W, X[te])), proba, atol=1e-6), "live math != sklearn"
-    agree = float((live.argmax(1) == pred).mean())
-    proba, pred = live, live.argmax(1)
-    test_acc = float((pred == y[te]).mean())
-    if agree < 1:
-        log.info("    float32 storage changed %.0f%% of decisions", 100 * (1 - agree))
 
     disp = ep.copy().crop(*DISPLAY_WINDOW).resample(DISPLAY_SFREQ, verbose="error")
     dd, md = disp.get_data(), mu.get_data()
@@ -180,20 +185,22 @@ def process(subject: int, paradigm: str) -> dict | None:
     tag = "I" if paradigm == "imagined" else "E"
     cards = []
     for k, i in enumerate(te):
+        devices = {name: {"pred": CLASSES[d["pred"][k]], "conf": round(float(d["proba"][k].max()), 3),
+                          "proba": {c: round(float(d["proba"][k, j]), 3) for j, c in enumerate(CLASSES)}} for name, d in dev.items()}
         card = {
             "id": f"S{subject:03d}{tag}-{i:03d}",
             "paradigm": paradigm,
             "label": labels[i],
             "onsetSec": round(float(ep.events[i, 0] / ep.info["sfreq"]), 2),
-            "pred": CLASSES[pred[k]],
-            "conf": round(float(proba[k].max()), 3),
-            "proba": {c: round(float(proba[k, j]), 3) for j, c in enumerate(CLASSES)},
+            **devices["cap"],
+            "dev": devices,
         }
         for n in CHANNELS:
             key = n.lower()
             card[key] = np.round(dd[i, ch[n]] * 1e6, 1).tolist()
             card["erd" + n[0].upper() + n[1:].lower()] = round(erd_percent(md[i, mch[n]], mu.times), 1)
         cards.append(card)
+    ids = np.array([c["id"] for c in cards])
     return {
         "subject": subject,
         "paradigm": paradigm,
@@ -201,12 +208,12 @@ def process(subject: int, paradigm: str) -> dict | None:
         "nDropped": n_dropped,
         "nTrain": int(len(tr)),
         "nTest": int(len(te)),
-        "trainCv": round(float(cv.mean()), 3),
-        "testAcc": round(test_acc, 3),
-        "confusion": confusion_matrix(y[te], pred, labels=list(range(len(CLASSES)))).tolist(),
+        "trainCv": round(dev["cap"]["cv"], 3),
+        "testAcc": round(dev["cap"]["acc"], 3),
+        "devices": {name: {"trainCv": round(d["cv"], 3), "testAcc": round(d["acc"], 3)} for name, d in dev.items()},
+        "confusion": confusion_matrix(y[te], dev["cap"]["pred"], labels=list(range(len(CLASSES)))).tolist(),
         "cards": cards,
-        "_live": {"W": W, "coef": lda.coef_, "intercept": lda.intercept_, "X": Xte,
-                  "ids": np.array([c["id"] for c in cards])},
+        "_live": {name: {**d["live"], "ids": ids} for name, d in dev.items()},
     }
 
 
@@ -244,14 +251,16 @@ def main() -> None:
         "taskWindow": TASK_WINDOW,
         "baseWindow": BASE_WINDOW,
         "channels": list(CHANNELS),
+        "devices": {k: list(v) for k, v in DEVICES.items()},
         "selection": f"subjects {a}-{b}, 5-class decoder kept if 5-fold train CV >= {MIN_TRAIN_CV} (chance 0.20)",
         "subjects": kept,
     }
     live = {}
     for r in kept:
         key = f"S{r['subject']:03d}{'I' if r['paradigm'] == 'imagined' else 'E'}"
-        for part, arr in r.pop("_live").items():
-            live[f"{key}__{part}"] = arr
+        for name, parts in r.pop("_live").items():
+            for part, arr in parts.items():
+                live[f"{key}.{name}__{part}"] = arr
     MODELS.parent.mkdir(exist_ok=True)
     np.savez_compressed(MODELS, **live)
     log.info("Wrote %s (%.1f MB): live decoder weights + held-out epochs", MODELS, MODELS.stat().st_size / 1e6)
@@ -262,6 +271,9 @@ def main() -> None:
         nt = sum(s["nTest"] for s in sub)
         acc = sum(s["testAcc"] * s["nTest"] for s in sub) / max(1, nt)
         log.info("%-8s: %d subjects, %d held-out cards, pooled held-out acc %.2f (chance 0.20)", p, len(sub), nt, acc)
+        for name in DEVICES:
+            da = sum(s["devices"][name]["testAcc"] * s["nTest"] for s in sub) / max(1, nt)
+            log.info("          %-6s pooled held-out acc %.2f", name, da)
     log.info("Wrote %s (%.1f MB)", OUT, OUT.stat().st_size / 1e6)
 
 

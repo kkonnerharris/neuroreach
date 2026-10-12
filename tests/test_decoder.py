@@ -31,12 +31,14 @@ def test_every_library_trial_is_decodable(decoder, cards):
     assert {c["id"] for c in cards} == set(decoder.index)
 
 
-def test_live_decode_matches_library(decoder, cards):
+@pytest.mark.parametrize("device,nch", [("cap", 21), ("crown", 8), ("muse", 4)])
+def test_live_decode_matches_library(decoder, cards, device, nch):
+    """Each device's decoder sees only its own electrodes and reproduces the library."""
     for c in cards:
-        dec = decoder.decode(c["id"])
-        assert dec["command"] == c["pred"], c["id"]
-        assert abs(dec["conf"] - c["conf"]) < 1e-3
-        assert dec["samples"] == [21, 480]  # 21 sensorimotor channels x 3 s at 160 Hz
+        dec = decoder.decode(c["id"], device)
+        assert dec["command"] == c["dev"][device]["pred"], (device, c["id"])
+        assert abs(dec["conf"] - c["dev"][device]["conf"]) < 1e-3
+        assert dec["samples"] == [nch, 480]
 
 
 def test_decoding_is_fast(decoder, cards):
